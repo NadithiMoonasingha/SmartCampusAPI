@@ -100,32 +100,131 @@ curl -X DELETE http://localhost:8080/SmartCampusAPI/api/v1/rooms/LIB-301
 
 ## Report — Answers to Coursework Questions
 
-### Part 1 — JAX-RS Resource Lifecycle
-By default, JAX-RS creates a **new instance** of each resource class for every incoming HTTP request (per-request lifecycle). This means resource classes are not singletons. Because of this, any instance variables would be reset on each request and cannot be used to store shared state. To share data across requests, static data structures must be used — in this project, the `DataStore` class holds static HashMaps for rooms, sensors, and readings. These are shared across all requests safely because they exist at the class level, not the instance level.
+---
 
-### Part 1 — HATEOAS
-HATEOAS (Hypermedia as the Engine of Application State) means that API responses include links to related resources, allowing clients to navigate the API dynamically without needing to hardcode URLs. This benefits client developers because they do not need to memorise or look up endpoint paths — the API itself tells them where to go next. For example, the discovery endpoint returns links to `/api/v1/rooms` and `/api/v1/sensors`, guiding the client automatically.
+### **Part 1 — Service Architecture & Setup**
 
-### Part 2 — Full Objects vs IDs in Lists
-Returning full room objects in a list provides all information in a single request, reducing the number of API calls a client must make. However, it increases network bandwidth and response size, especially with many rooms. Returning only IDs is more lightweight but forces the client to make additional requests to fetch each room's details, increasing latency. For most use cases, returning full objects is more practical unless the dataset is very large.
+#### **1.1 Project & Application Configuration**
+In JAX-RS, resource classes are typically instantiated per request. This means a new instance of the resource class is created for each incoming HTTP request, preventing unintended sharing of request-specific data between clients.
 
-### Part 2 — Idempotency of DELETE
-Yes, DELETE is idempotent in this implementation. The first DELETE request removes the room and returns 200 OK. Any subsequent DELETE request for the same room returns 404 Not Found because the room no longer exists. The server state does not change after the first deletion — the room is gone regardless of how many times the request is sent. This satisfies the definition of idempotency: multiple identical requests produce the same server state.
+However, this application uses shared in-memory data structures such as HashMap and ArrayList to store rooms, sensors, and readings. These structures are shared across all requests and therefore represent the actual state of the application.
 
-### Part 3 — @Consumes and Content-Type Mismatch
-The `@Consumes(MediaType.APPLICATION_JSON)` annotation tells JAX-RS that the endpoint only accepts `application/json` content. If a client sends data with a different Content-Type such as `text/plain` or `application/xml`, JAX-RS will automatically return a **415 Unsupported Media Type** response without even invoking the resource method. This protects the API from receiving data it cannot parse.
+Because multiple requests may access or modify these shared collections concurrently, issues such as race conditions, inconsistent updates, or data loss can occur. To address this, thread-safe approaches should be used, such as ConcurrentHashMap or synchronizing critical write operations.
 
-### Part 3 — @QueryParam vs Path-Based Filtering
-Using `@QueryParam` for filtering (e.g. `/sensors?type=CO2`) is preferred because query parameters are semantically designed for optional filtering and searching of collections. A path-based approach (e.g. `/sensors/type/CO2`) implies that `type` and `CO2` are fixed resources in the hierarchy, which is misleading. Query parameters can also be combined easily (e.g. `?type=CO2&status=ACTIVE`), while path-based filtering would require separate endpoints for each combination.
+Therefore, while JAX-RS resource instances are stateless and request-scoped, explicit handling is required to ensure the safety of shared in-memory data.
 
-### Part 4 — Sub-Resource Locator Pattern
-The Sub-Resource Locator pattern delegates handling of nested paths to separate resource classes. Instead of defining all endpoints in one large class, logic is split into focused classes such as `SensorReadingResource`. This improves maintainability, readability, and testability. Each class has a single responsibility. In large APIs with many nested resources, this prevents any single class from becoming unmanageably large and makes it easier to extend or modify individual sections independently.
+---
 
-### Part 5 — HTTP 422 vs 404
-HTTP 404 means "the requested resource was not found" — it implies the URL itself points to something that does not exist. HTTP 422 Unprocessable Entity is more semantically accurate when the request URL is valid but the payload contains a reference to a missing resource (such as a non-existent `roomId`). The issue is not with the endpoint but with the data inside the request body. Using 422 clearly communicates that the server understood the request but could not process it due to invalid data references.
+#### **1.2 The ”Discovery” Endpoint**
+HATEOAS (Hypermedia as the Engine of Application State) is a key principle of RESTful design in which API responses include links to related resources.
 
-### Part 5 — Security Risks of Stack Traces
-Exposing Java stack traces to external users is a serious security risk. Stack traces reveal internal class names, package structures, method names, line numbers, and library versions. An attacker can use this information to identify which frameworks and versions are in use, then look up known vulnerabilities for those versions. They can also understand the internal architecture of the application to craft more targeted attacks. The global exception mapper prevents this by catching all unhandled exceptions and returning only a generic error message.
+This approach allows clients to dynamically navigate the API without relying on external documentation. For example, the discovery endpoint provides links to primary resources such as rooms and sensors.
 
-### Part 5 — Filters vs Inline Logging
-Using JAX-RS filters for cross-cutting concerns like logging is superior to inserting `Logger.info()` calls in every resource method because filters apply automatically to every request and response without modifying any resource code. This follows the principle of separation of concerns — resource methods focus on business logic, while filters handle infrastructure concerns. If logging requirements change, only the filter needs updating rather than every individual method. It also ensures no endpoint is accidentally missed.
+This improves usability, reduces coupling between client and server, and allows the system to evolve without breaking client applications.
+
+---
+
+### **Part 2 — Room Management**
+
+#### **2.1 Room Resource Implementation**
+There is a trade-off between returning full objects and only IDs when listing resources.
+
+Returning full objects provides complete information in a single response, reducing the need for additional API calls and simplifying client-side logic. However, it increases payload size and bandwidth usage.
+
+Returning only IDs reduces response size and improves performance for large datasets but requires clients to make additional requests to retrieve full details.
+
+In this implementation, returning full objects is more suitable due to the relatively small dataset and improved usability.
+
+---
+
+#### **2.2 Room Deletion & Safety Logic**
+The DELETE operation is idempotent.
+
+When a DELETE request is made for a room, the first request successfully removes the room. If the same request is repeated, the server returns a 404 Not Found response because the room no longer exists.
+
+Although the response changes, the server state remains unchanged after the first request. This satisfies the definition of idempotency.
+
+If deletion is blocked due to assigned sensors, repeated requests also do not alter the server state, further confirming idempotency.
+
+---
+
+### **Part 3 — Sensor Operations & Linking**
+
+#### **3.1 Sensor Resource & Integrity**
+The annotation @Consumes(MediaType.APPLICATION_JSON) ensures that the resource method only accepts requests with a JSON payload.
+
+If a client sends data using a different media type, such as text/plain or application/xml, JAX-RS will automatically reject the request and return a 415 Unsupported Media Type response.
+
+This enforces a clear contract between client and server and ensures that only valid and expected data formats are processed.
+
+---
+
+#### **3.2 Filtered Retrieval & Search**
+Using query parameters for filtering, such as /sensors?type=CO2, is preferred over path-based filtering.
+
+Query parameters are designed for optional filtering and searching of collections. They also allow multiple filters to be combined, such as /sensors?type=CO2&status=ACTIVE.
+
+Path-based filtering implies a fixed resource hierarchy and is less flexible, making query parameters the more appropriate and scalable approach.
+
+---
+
+### **Part 4 — Deep Nesting with Sub - Resources**
+
+#### **4.1 Sub-Resource Locator Pattern**
+The Sub-Resource Locator pattern delegates handling of nested resources to separate classes.
+
+For example, the path /sensors/{sensorId}/readings is handled by a dedicated resource class rather than being managed within a single large controller.
+
+This improves separation of concerns, enhances readability, and makes the application easier to maintain and extend.
+
+---
+
+#### **4.2 Historical Data Management**
+Sensor readings are managed through the nested endpoint /sensors/{sensorId}/readings.
+
+The GET method retrieves historical readings for a sensor, while the POST method allows new readings to be added.
+
+Each time a new reading is added, the currentValue field of the parent sensor is updated to reflect the most recent measurement. This ensures consistency between the sensor’s current state and its historical data.
+
+---
+
+### **Part 5 — Advanced Error Handling, Exception Mapping & Logging**
+
+#### **5.1 Resource Conflict (409)**
+HTTP 409 Conflict is used when a request cannot be completed due to a conflict with the current state of the resource.
+
+In this system, attempting to delete a room that still has sensors assigned violates a business rule. Therefore, returning a 409 Conflict response is appropriate.
+
+---
+
+#### **5.2 Dependency Validation (422 Unprocessable Entity)**
+HTTP 404 Not Found indicates that the requested endpoint does not exist.
+
+HTTP 422 Unprocessable Entity is more appropriate when the request is valid but contains invalid data, such as a non-existent roomId in a valid POST request.
+
+In this case, the endpoint exists, but the data is semantically incorrect, making 422 the better choice.
+
+---
+
+#### **5.3 State Constraint (403 Forbidden) **
+HTTP 403 Forbidden is used when the server understands the request but refuses to perform it due to a restriction.
+
+If a sensor is in MAINTENANCE state, it cannot accept new readings. Although the request is valid, the action is not allowed, so a 403 response is appropriate.
+
+---
+
+#### **5.4 The Global Safety Net (500) **
+Exposing internal stack traces can reveal sensitive information such as class names, file structures, method details, and library versions.
+
+This information can be exploited by attackers to identify vulnerabilities within the system.
+
+To prevent this, a global exception handler should return a generic error response to clients while logging detailed error information internally.
+
+---
+
+#### **5.5 API Request & Response Logging Filters**
+Using JAX-RS filters such as ContainerRequestFilter and ContainerResponseFilter is a better approach for logging compared to inserting logging statements within each resource method.
+
+Filters allow centralized logging of all incoming requests and outgoing responses, ensuring consistency and reducing code duplication.
+
+This approach improves maintainability and follows best practices for handling cross-cutting concerns in API design.
