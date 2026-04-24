@@ -19,14 +19,17 @@ public class SensorReadingResource {
         this.sensorId = sensorId;
     }
 
-    // GET /api/v1/sensors/{sensorId}/readings
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public Response getReadings() {
         Sensor sensor = DataStore.sensors.get(sensorId);
+
         if (sensor == null) {
-            return Response.status(404).entity("{\"error\":\"Sensor not found\"}").build();
+            return Response.status(404)
+                    .entity("{\"error\":\"Sensor not found\"}")
+                    .build();
         }
+
         List<SensorReading> readings = DataStore.readings.getOrDefault(sensorId, new ArrayList<>());
         return Response.ok(readings).build();
     }
@@ -54,8 +57,8 @@ public class SensorReadingResource {
         if (reading.getTimestamp() == 0) {
             reading.setTimestamp(System.currentTimeMillis());
         }
-        // Save reading
-        DataStore.readings.get(sensorId).add(reading);
+        // Save reading — use computeIfAbsent to avoid NPE
+        DataStore.readings.computeIfAbsent(sensorId, k -> new ArrayList<>()).add(reading);
         // Update sensor's currentValue
         sensor.setCurrentValue(reading.getValue());
         return Response.status(201).entity(reading).build();

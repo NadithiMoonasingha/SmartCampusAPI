@@ -67,6 +67,33 @@ public class SensorResource {
         }
         return Response.ok(sensor).build();
     }
+    
+        @DELETE
+        @Path("/{sensorId}")
+        @Produces(MediaType.APPLICATION_JSON)
+        public Response deleteSensor(@PathParam("sensorId") String sensorId) {
+            Sensor sensor = DataStore.sensors.get(sensorId);
+            if (sensor == null) {
+                return Response.status(404)
+                    .type(MediaType.APPLICATION_JSON)
+                    .entity("{\"error\":\"Sensor not found\"}")
+                    .build();
+            }
+            // Remove sensor from its room's sensorIds list
+            if (sensor.getRoomId() != null) {
+                Room room = DataStore.rooms.get(sensor.getRoomId());
+                if (room != null) {
+                    room.getSensorIds().remove(sensorId);
+                }
+            }
+            // Remove sensor's readings (only if exists)
+            if (DataStore.readings.containsKey(sensorId)) {
+                DataStore.readings.remove(sensorId);
+            }
+            // Remove the sensor itself
+            DataStore.sensors.remove(sensorId);
+            return Response.ok("{\"message\":\"Sensor deleted successfully\"}").build();
+        }
 
     // Sub-resource locator for readings
     @Path("/{sensorId}/readings")
